@@ -67,7 +67,7 @@ class Market:
     def get_price(self):
         # 매수 가격을 결정
         current_price = pyupbit.get_current_price(self.ticker)
-        price = current_price * 0.99
+        price = current_price * 0.996
 
         price_str = str(price)
         dot = price_str.index('.')
@@ -102,16 +102,16 @@ class Market:
         df = pyupbit.get_ohlcv(self.ticker, self.minute)
         pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(
             df).get_pvt()
-        if ma_ewm_pvt[-1] - ma_ewm_pvt[-2] < 0:
+        if ma_ewm_pvt.iloc[-1] - ma_ewm_pvt.iloc[-2] < 0:
             return True
 
     def meet(self):
-        # PVT선도가 이동평균선보다 아래 있을 때
+        # PVT선도가 UPP보다 위에 있을 때
 
         df = pyupbit.get_ohlcv(self.ticker, self.minute)
         pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(df).get_pvt()
 
-        if pvt.iloc[-1] < ma_ewm_pvt.iloc[-1]:
+        if pvt.iloc[-1] >= ubb_pvt.iloc[-1]:
             return True
 
     def buying(self):
@@ -133,22 +133,54 @@ class Market:
                 if count == 1200:
                     return Market(self.ticker, self.minute).order_cancel()
 
-                # PVT선도가 이동평균선이랑 만날 때 매수 주문 취소
-                if Market(self.ticker, self.minute).meet() or Market(self.ticker, 'minute3').down_cancel():
-                    return Market(self.ticker, self.minute).order_cancel()
-
                 # 매수가가 구매범위를 초과할 경우 매수 주문 취소
-                if price/hope_buy_price > 1.02:
+                if price/hope_buy_price > 1.015:
                     return Market(self.ticker, self.minute).order_cancel()
 
                 # 8시 50분일 경우 주문 취소
                 now = datetime.datetime.now()
                 if now.hour == 8 and now.minute == 50:
                     return Market(self.ticker, self.minute).order_cancel()
+
+                if not Market(self.ticker, 'minute1').meet():
+                    return Market(self.ticker, self.minute).order_cancel()
+
+                if Market(self.ticker, 'minute3').down_cancel():
+                    return Market(self.ticker, self.minute).order_cancel()
+
             else:
                 return True
 
             time.sleep(1)
+
+    def get_percentage(self):
+        df = pyupbit.get_ohlcv(self.ticker, self.minute)
+        pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(df).get_pvt()
+
+        cnt1, cnt2 = 0, 0
+        for i in range(-12, 0):
+            if pvt.iloc[i] > ma_ewm_pvt.iloc[i]:
+                cnt1 += 1
+            if pvt.iloc[i] > ubb_pvt.iloc[i]:
+                cnt2 += 1
+        if cnt1 > 6 and cnt2 > 1 and pvt.iloc[-1] > ubb_pvt.iloc[-1]:
+            return True
+
+    def get_nw(self):
+        df = pyupbit.get_ohlcv(self.ticker, self.minute)
+        pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(df).get_pvt()
+        diff = []
+        for i in range(19, len(pvt)):
+            diff.append((i, ubb_pvt[i]-lbb_pvt[i]))
+        gap_start = diff[19][1]
+        for i, gap in diff:
+            if gap / gap_start > 1.5:
+                gap_start = gap
+                nw = True
+            if gap_start / gap > 1.5:
+                gap_start = gap
+                nw = False
+        return nw
 
 
 def buy(krw_balance):
@@ -160,13 +192,22 @@ def buy(krw_balance):
         if upbit.get_order(ticker):
             if Market(ticker, 'minute1').buying():
                 return
-            else:
-                break
+
+    chosen_ticker = list()
+    for ticker in tickers:
+        df_day = pyupbit.get_ohlcv(ticker, "day", count=100)
+
+        # 거래일이 20일 미만일 경우 continue
+        if len(df_day) < 20:
+            continue
+
+        if Market(ticker, 'minute60').get_percentage() and not Market(ticker, 'minute1').get_nw():
+            chosen_ticker.append(ticker)
+        time.sleep(0.1)
     # 매수 시도
-    while True:
-        for ticker in tickers[-1::-1]:
-            if ticker == 'KRW-ORBS':
-                continue
+    while chosen_ticker:
+        for ticker in chosen_ticker:
+
             # 8시 50분일 경우 시간 지연을 1시간 정도 함(아침에는 변동성이 너무 크기 때문에.)
             now = datetime.datetime.now()
             if now.hour == 8 and now.minute == 50:
@@ -179,51 +220,26 @@ def buy(krw_balance):
             if price > krw_balance:
                 continue
 
-            df_day = pyupbit.get_ohlcv(ticker, "day", count=100)
-            df_minute60 = pyupbit.get_ohlcv(ticker, "minute60")
-
-            # 거래일이 20일 미만일 경우 continue
-            if len(df_day) < 20:
-                continue
-
-            # 시초 가격
-            open_price = df_day['open'].iloc[-1]
-
-            # 최고 가격
-            higt = df_day['high'].iloc[-1]
-
-            # 이동 평균선, BB상단, BB하단
-            ma_bb, ubb_bb, lbb_bb = DataFrame(df_day).get_bb()
-            pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(
-                df_minute60).get_pvt()
-
-            cnt1, cnt2 = 0, 0
-            max_ma = 0
-            check_pvt = False
-            for i in range(-12, 0):
-                if pvt.iloc[i] > ma_ewm_pvt.iloc[i]:
-                    cnt1 += 1
-                if pvt.iloc[i] > ubb_pvt.iloc[i]:
-                    cnt2 += 1
-                max_ma = max(max_ma, ma_ewm_pvt.iloc[i])
-            if cnt1 > 6 and cnt2 > 1 and ma_ewm_pvt.iloc[-1] == max_ma and pvt.iloc[-1] > ubb_pvt.iloc[-1]:
-                check_pvt = True
-
             # 매수 시도(0.1 초마다 조건을 확인 후 시도)
-            if ubb_bb > higt and check_pvt and not Market(ticker, 'minute1').down_cancel() and not Market(ticker, 'minute3').down_cancel() and not Market(ticker, 'minute5').down_cancel() and not Market(ticker, 'minute10').down_cancel() and not Market(ticker, 'minute15').down_cancel() and not Market(ticker, 'minute1').meet() and price/open_price < 1.065:
-                hope_buy_price = Market(ticker, 'minute1').get_price()
-                volume = int(krw_balance//hope_buy_price)
-                if upbit.buy_limit_order(ticker, hope_buy_price, volume):
-                    print(
-                        f'{ticker}의 매수 주문이 들어갔습니다. 현재가: {price} 희망가: {hope_buy_price} 수량: {volume}')
+            if Market(ticker, 'minute1').get_nw():
+                if Market(ticker, 'minute1').meet() and not Market(ticker, 'minute3').down_cancel():
+                    hope_buy_price = Market(ticker, 'minute1').get_price()
+                    volume = int(krw_balance//hope_buy_price)
+                    print(ticker, hope_buy_price, volume)
+                    if upbit.buy_limit_order(ticker, hope_buy_price, volume):
+                        print(
+                            f'{ticker}의 매수 주문이 들어갔습니다. 현재가: {price} 희망가: {hope_buy_price} 수량: {volume}')
 
-                    if Market(ticker, 'minute1').buying():
-                        return
+                        if Market(ticker, 'minute1').buying():
+                            return
+                else:
+                    if Market(ticker, 'minute3').down_cancel() and Market(ticker, 'minute5').down_cancel() and Market(ticker, 'minute10').down_cancel():
+                        chosen_ticker.remove(ticker)
             else:
                 print(f'{ticker}구매 조건에 맞지 않습니다.')
 
             # 주문 외 요청은 초당 30번 가능
-            time.sleep(0.1)
+            time.sleep(0.2)
 
 
 def sell(ticker):
@@ -239,30 +255,28 @@ def sell(ticker):
         coin_balance = upbit.get_balance(ticker)
         now = datetime.datetime.now()
 
-        df_minute1 = pyupbit.get_ohlcv(ticker, "minute1")
-        pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(
-            df_minute1).get_pvt()
+        if current_price/avg_buy_price > 1.0055:
+            if Market(ticker, 'minute1').meet():
+                continue
+            else:
+                upbit.sell_market_order(ticker, coin_balance)
+        if avg_buy_price / current_price > 1.012:
+            upbit.sell_limit_order(ticker, avg_buy_price, coin_balance)
+        print(f'현재시간: {now} 구매 종목: {ticker} 수량: {coin_balance} 구매가: {avg_buy_price} 현재가: {current_price} 수익률: {round((current_price/avg_buy_price)*100, 2)} %')
 
-        if pvt.iloc[-1] > ubb_pvt.iloc[-1]:
-            while (pvt.iloc[-1] > ubb_pvt.iloc[-1] or not Market(ticker, 'minute1').meet()):
-                df_minute1 = pyupbit.get_ohlcv(ticker, "minute1")
-                pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(
-                    df_minute1).get_pvt()
-                print('오른다~')
-                time.sleep(1)
-            upbit.sell_market_order(ticker, coin_balance)
-        else:
-            print(f'현재시간: {now} 구매 종목: {ticker} 수량: {coin_balance} 구매가: {avg_buy_price} 현재가: {current_price} 수익률: {round((current_price/avg_buy_price)*100, 2)} %')
-            time.sleep(1)
+        time.sleep(1)
 
 
 while True:
-    balances = upbit.get_balances()
-    krw_balance = float(balances[0]['balance'])
-    # 매수된 ticker
-    if len(balances) > 1:
-        ticker = 'KRW-' + balances[1]['currency']
-        sell(ticker)
+    try:
+        balances = upbit.get_balances()
+        krw_balance = float(balances[0]['balance'])
+        # 매수된 ticker
+        if len(balances) > 1:
+            ticker = 'KRW-' + balances[1]['currency']
+            sell(ticker)
+            continue
+        # 매수 주문
+        buy(10000*0.9995)
+    except:
         continue
-    # 매수 주문
-    buy(krw_balance*0.9995)
