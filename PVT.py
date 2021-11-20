@@ -67,7 +67,7 @@ class Market:
     def get_price(self):
         # 매수 가격을 결정
         current_price = pyupbit.get_current_price(self.ticker)
-        price = current_price * 0.996
+        price = current_price * 0.995
 
         price_str = str(price)
         dot = price_str.index('.')
@@ -111,7 +111,7 @@ class Market:
         df = pyupbit.get_ohlcv(self.ticker, self.minute)
         pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(df).get_pvt()
 
-        if pvt.iloc[-1] >= ubb_pvt.iloc[-1]:
+        if pvt.iloc[-1] > ubb_pvt.iloc[-1]:
             return True
 
     def buying(self):
@@ -142,10 +142,7 @@ class Market:
                 if now.hour == 8 and now.minute == 50:
                     return Market(self.ticker, self.minute).order_cancel()
 
-                if not Market(self.ticker, 'minute1').meet():
-                    return Market(self.ticker, self.minute).order_cancel()
-
-                if Market(self.ticker, 'minute3').down_cancel():
+                if not Market(self.ticker, 'minute30').meet():
                     return Market(self.ticker, self.minute).order_cancel()
 
             else:
@@ -158,12 +155,13 @@ class Market:
         pvt, ma_ewm_pvt, ma_pvt, ubb_pvt, lbb_pvt = DataFrame(df).get_pvt()
 
         cnt1, cnt2 = 0, 0
-        for i in range(-12, 0):
+        for i in range(-7, 0):
             if pvt.iloc[i] > ma_ewm_pvt.iloc[i]:
                 cnt1 += 1
             if pvt.iloc[i] > ubb_pvt.iloc[i]:
                 cnt2 += 1
-        if cnt1 > 6 and cnt2 > 1 and pvt.iloc[-1] > ubb_pvt.iloc[-1]:
+        # and pvt.iloc[-1] > ubb_pvt.iloc[-1]
+        if cnt1 > 3 and cnt2 > 0:
             return True
 
     def get_nw(self):
@@ -174,10 +172,10 @@ class Market:
             diff.append((i, ubb_pvt[i]-lbb_pvt[i]))
         gap_start = diff[19][1]
         for i, gap in diff:
-            if gap / gap_start > 1.5:
+            if gap / gap_start > 1:
                 gap_start = gap
                 nw = True
-            if gap_start / gap > 1.5:
+            if gap_start / gap > 1:
                 gap_start = gap
                 nw = False
         return nw
@@ -200,8 +198,8 @@ def buy(krw_balance):
         # 거래일이 20일 미만일 경우 continue
         if len(df_day) < 20:
             continue
-
-        if Market(ticker, 'minute60').get_percentage() and not Market(ticker, 'minute1').get_nw():
+        #
+        if Market(ticker, 'minute60').get_percentage() and not Market(ticker, 'minute30').get_nw():
             chosen_ticker.append(ticker)
         time.sleep(0.1)
     # 매수 시도
@@ -221,22 +219,21 @@ def buy(krw_balance):
                 continue
 
             # 매수 시도(0.1 초마다 조건을 확인 후 시도)
-            if Market(ticker, 'minute1').get_nw():
-                if Market(ticker, 'minute1').meet() and not Market(ticker, 'minute3').down_cancel():
+            if Market(ticker, 'minute30').get_nw() and Market(ticker, 'minute30').meet():
+                if Market(ticker, 'minute5').get_nw() and Market(ticker, 'minute5').meet() and not Market(ticker, 'minute5').down_cancel():
                     hope_buy_price = Market(ticker, 'minute1').get_price()
                     volume = int(krw_balance//hope_buy_price)
-                    print(ticker, hope_buy_price, volume)
                     if upbit.buy_limit_order(ticker, hope_buy_price, volume):
                         print(
                             f'{ticker}의 매수 주문이 들어갔습니다. 현재가: {price} 희망가: {hope_buy_price} 수량: {volume}')
 
                         if Market(ticker, 'minute1').buying():
                             return
-                else:
-                    if Market(ticker, 'minute3').down_cancel() and Market(ticker, 'minute5').down_cancel() and Market(ticker, 'minute10').down_cancel():
-                        chosen_ticker.remove(ticker)
+                # else:
+                #     if Market(ticker, 'minute3').down_cancel() and Market(ticker, 'minute5').down_cancel() and Market(ticker, 'minute10').down_cancel() and Market(ticker, 'minute15').down_cancel():
+                #         chosen_ticker.remove(ticker)
             else:
-                print(f'{ticker}구매 조건에 맞지 않습니다.')
+                print(f'{ticker} 구매 조건에 맞지 않습니다.')
 
             # 주문 외 요청은 초당 30번 가능
             time.sleep(0.2)
@@ -255,13 +252,15 @@ def sell(ticker):
         coin_balance = upbit.get_balance(ticker)
         now = datetime.datetime.now()
 
-        if current_price/avg_buy_price > 1.0055:
+        if current_price / avg_buy_price > 1.02:
             if Market(ticker, 'minute1').meet():
                 continue
             else:
-                upbit.sell_market_order(ticker, coin_balance)
-        if avg_buy_price / current_price > 1.012:
+                upbit.sell_limit_order(ticker, current_price, coin_balance)
+
+        if avg_buy_price / current_price > 1.02:
             upbit.sell_limit_order(ticker, avg_buy_price, coin_balance)
+
         print(f'현재시간: {now} 구매 종목: {ticker} 수량: {coin_balance} 구매가: {avg_buy_price} 현재가: {current_price} 수익률: {round((current_price/avg_buy_price)*100, 2)} %')
 
         time.sleep(1)
@@ -274,7 +273,9 @@ while True:
         # 매수된 ticker
         if len(balances) > 1:
             ticker = 'KRW-' + balances[1]['currency']
+
             sell(ticker)
+
             continue
         # 매수 주문
         buy(10000*0.9995)
